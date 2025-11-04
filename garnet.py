@@ -21,10 +21,9 @@ import os
 import math
 
 # Minimum diameter threshold in micrometers
-MIN_DIAMETER_UM = 75.0  # TODO is it correct?
+MIN_DIAMETER_UM = 75.0
 # Minimum area for a circle with diameter MIN_DIAMETER_UM
 MIN_AREA_UM2 = math.pi * (MIN_DIAMETER_UM / 2) ** 2
-MIN_AREA_UM2 = 75  # to make it lower
 
 
 def get_scale_config_path():
@@ -221,7 +220,9 @@ class GarnetPlugin(Gimp.PlugIn):
             error = GLib.Error.new_literal(Gimp.PlugIn.error_quark(), error_msg, 0)
             return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, error)
 
-        longer_side = max(width, height)
+        # Find actual bounds of selected pixels
+        actual_x, actual_y, actual_width, actual_height = find_selection_bounds(selection)
+        longer_side = max(actual_width, actual_height)
         Gimp.message(f"Selection size: {longer_side} pixels (longer side)")
 
         if run_mode == Gimp.RunMode.INTERACTIVE:
