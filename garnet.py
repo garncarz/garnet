@@ -26,6 +26,72 @@ MIN_DIAMETER_UM = 75.0
 MIN_AREA_UM2 = math.pi * (MIN_DIAMETER_UM / 2) ** 2
 
 
+def extract_xcf_to_pngs(xcf_path, output_dir, layer_name=None):
+    """Open a .xcf file, export one layer and all vector paths as PNG masks."""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
+    file = Gio.File.new_for_path(xcf_path)
+    image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, file)
+
+    # Export the requested layer (or first layer if no name given)
+    layers = image.get_layers()
+    if layers:
+        if layer_name:
+            # Find layer by name
+            for layer in layers:
+                if layer.get_name() == layer_name:
+                    image_file = Gio.File.new_for_path(os.path.join(output_dir, "image.png"))
+                    Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, image_file, None)
+                    break
+        else:
+            # Use first layer
+            layer = layers[0]
+            image_file = Gio.File.new_for_path(os.path.join(output_dir, "image.png"))
+            Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, image_file, None)
+
+    # Export each vector path as a mask
+    paths = image.get_paths()
+    for i, v in enumerate(paths):
+        # Create a new grayscale image for the mask
+        mask_image = Gimp.Image.new(image.get_width(), image.get_height(), Gimp.ImageBaseType.GRAY)
+
+        # Create a layer filled with black
+        mask_layer = Gimp.Layer.new(mask_image, "mask",
+                                      image.get_width(), image.get_height(),
+                                      Gimp.ImageType.GRAY_IMAGE,
+                                      100, Gimp.LayerMode.NORMAL)
+        mask_image.insert_layer(mask_layer, None, 0)
+        Gimp.context_set_foreground(Gegl.Color.new("black"))
+        mask_layer.edit_fill(Gimp.FillType.FOREGROUND)
+
+        # Create a new path in the mask image with the same strokes
+        new_path = Gimp.Path.new(mask_image, v.get_name())
+        mask_image.insert_path(new_path, None, 0)
+
+        # Copy all strokes from the original path
+        strokes = v.get_strokes()
+        for stroke_id in strokes:
+            stroke_type, controlpoints, closed = v.stroke_get_points(stroke_id)
+            new_path.stroke_new_from_points(stroke_type, controlpoints, closed)
+
+        # Convert path to selection in the mask image
+        Gimp.Selection.none(mask_image)
+        mask_image.select_item(Gimp.ChannelOps.REPLACE, new_path)
+
+        # Fill the selection with white
+        Gimp.context_set_foreground(Gegl.Color.new("white"))
+        mask_layer.edit_fill(Gimp.FillType.FOREGROUND)
+
+        # Clear selection and export
+        Gimp.Selection.none(mask_image)
+        mask_file = Gio.File.new_for_path(os.path.join(output_dir, f"mask_{i}.png"))
+        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, mask_image, mask_file, None)
+
+        # Clean up
+        mask_image.delete()
+
+    image.delete()
 def get_scale_config_path():
     """Get path to scale configuration file"""
     config_dir = GLib.get_user_config_dir()
@@ -174,7 +240,7 @@ def create_text_layer(image, text_content, x, y, layer_name, text_color=(1.0, 1.
 
 class GarnetPlugin(Gimp.PlugIn):
     def do_query_procedures(self):
-        return ['garnet-paths-areas', 'garnet-get-scale']
+        return ['garnet-paths-areas', 'garnet-get-scale', 'garnet-export-xcf']
 
     def do_create_procedure(self, name):
         if name == 'garnet-get-scale':
@@ -191,6 +257,33 @@ class GarnetPlugin(Gimp.PlugIn):
                 name,
             )
             procedure.set_attribution('OG', 'OG', '2025')
+            return procedure
+        elif name == 'garnet-export-xcf':
+            procedure = Gimp.ImageProcedure.new(self, name,
+                                           Gimp.PDBProcType.PLUGIN,
+                                           self.run_export_xcf, None)
+            procedure.set_image_types('*')
+            procedure.set_menu_label('Export XCF to PNGs')
+            procedure.set_icon_name(GimpUi.ICON_DOCUMENT_SAVE)
+            procedure.add_menu_path('<Image>/Filters/Garnet/')
+            procedure.set_documentation(
+                'Export XCF to PNGs',
+                'Export a layer and all vector paths as PNG masks from an XCF file',
+                name,
+            )
+            procedure.set_attribution('OG', 'OG', '2025')
+
+            # Add arguments for non-interactive mode
+            procedure.add_string_argument("xcf-path", "XCF file path",
+                                         "Path to the XCF file to export",
+                                         "", GObject.ParamFlags.READWRITE)
+            procedure.add_string_argument("output-dir", "Output directory",
+                                         "Directory where PNG files will be saved",
+                                         "", GObject.ParamFlags.READWRITE)
+            procedure.add_string_argument("layer-name", "Layer name",
+                                         "Name of layer to export (empty for first layer)",
+                                         "", GObject.ParamFlags.READWRITE)
+
             return procedure
         elif name == 'garnet-paths-areas':
             procedure = Gimp.ImageProcedure.new(self, name,
@@ -210,6 +303,120 @@ class GarnetPlugin(Gimp.PlugIn):
 
     def do_set_i18n(self, procname):
         return False
+
+    def run_export_xcf(self, procedure, run_mode, image, drawables, config, run_data):
+        # Try to get arguments from config for non-interactive mode
+        xcf_path = None
+        output_dir = None
+        layer_name = None
+
+        try:
+            xcf_path = config.get_property('xcf-path')
+            output_dir = config.get_property('output-dir')
+            layer_name = config.get_property('layer-name')
+        except:
+            pass
+
+        # If arguments are provided (non-interactive mode), use them directly
+        if xcf_path and output_dir:
+            # Strip layer_name and convert empty string to None
+            if layer_name:
+                layer_name = layer_name.strip() or None
+
+            try:
+                extract_xcf_to_pngs(xcf_path, output_dir, layer_name)
+                if layer_name:
+                    Gimp.message(f"Successfully exported layer '{layer_name}' and vector paths to {output_dir}")
+                else:
+                    Gimp.message(f"Successfully exported first layer and vector paths to {output_dir}")
+                return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+            except Exception as e:
+                error_msg = f"Export failed: {str(e)}"
+                error = GLib.Error.new_literal(Gimp.PlugIn.error_quark(), error_msg, 0)
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, error)
+
+        # Interactive mode - show dialog
+        GimpUi.init('garnet-export-xcf')
+
+        dialog = GimpUi.Dialog(use_header_bar=True,
+                               title='Export XCF to PNGs',
+                               role='garnet-export-xcf')
+        dialog.add_button('_Cancel', Gtk.ResponseType.CANCEL)
+        dialog.add_button('_Export', Gtk.ResponseType.OK)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        vbox.set_margin_start(10)
+        vbox.set_margin_end(10)
+        vbox.set_margin_top(10)
+        vbox.set_margin_bottom(10)
+        dialog.get_content_area().add(vbox)
+
+        # XCF file chooser
+        xcf_label = Gtk.Label(label="Select XCF file:")
+        xcf_label.set_halign(Gtk.Align.START)
+        vbox.pack_start(xcf_label, False, False, 0)
+
+        xcf_chooser = Gtk.FileChooserButton(title="Select XCF file")
+        xcf_chooser.set_action(Gtk.FileChooserAction.OPEN)
+        xcf_filter = Gtk.FileFilter()
+        xcf_filter.set_name("XCF files")
+        xcf_filter.add_pattern("*.xcf")
+        xcf_chooser.add_filter(xcf_filter)
+        vbox.pack_start(xcf_chooser, False, False, 0)
+
+        # Output directory chooser
+        output_label = Gtk.Label(label="Select output directory:")
+        output_label.set_halign(Gtk.Align.START)
+        vbox.pack_start(output_label, False, False, 0)
+
+        output_chooser = Gtk.FileChooserButton(title="Select output directory")
+        output_chooser.set_action(Gtk.FileChooserAction.SELECT_FOLDER)
+        vbox.pack_start(output_chooser, False, False, 0)
+
+        # Layer name entry
+        layer_label = Gtk.Label(label="Layer name to export (leave empty for first layer):")
+        layer_label.set_halign(Gtk.Align.START)
+        vbox.pack_start(layer_label, False, False, 0)
+
+        layer_entry = Gtk.Entry()
+        layer_entry.set_placeholder_text("Leave empty to use first layer")
+        vbox.pack_start(layer_entry, False, False, 0)
+
+        dialog.show_all()
+
+        if dialog.run() == Gtk.ResponseType.OK:
+            xcf_path = xcf_chooser.get_filename()
+            output_dir = output_chooser.get_filename()
+            layer_name = layer_entry.get_text().strip() or None
+
+            if not xcf_path:
+                dialog.destroy()
+                error_msg = "Please select an XCF file!"
+                error = GLib.Error.new_literal(Gimp.PlugIn.error_quark(), error_msg, 0)
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, error)
+
+            if not output_dir:
+                dialog.destroy()
+                error_msg = "Please select an output directory!"
+                error = GLib.Error.new_literal(Gimp.PlugIn.error_quark(), error_msg, 0)
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, error)
+
+            try:
+                extract_xcf_to_pngs(xcf_path, output_dir, layer_name)
+                if layer_name:
+                    Gimp.message(f"Successfully exported layer '{layer_name}' and vector paths to {output_dir}")
+                else:
+                    Gimp.message(f"Successfully exported first layer and vector paths to {output_dir}")
+                dialog.destroy()
+                return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+            except Exception as e:
+                dialog.destroy()
+                error_msg = f"Export failed: {str(e)}"
+                error = GLib.Error.new_literal(Gimp.PlugIn.error_quark(), error_msg, 0)
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, error)
+
+        dialog.destroy()
+        return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
 
     def run_get_scale(self, procedure, run_mode, image, drawables, config, run_data):
         selection = image.get_selection()
