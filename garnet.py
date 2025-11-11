@@ -26,13 +26,10 @@ MIN_DIAMETER_UM = 75.0
 MIN_AREA_UM2 = math.pi * (MIN_DIAMETER_UM / 2) ** 2
 
 
-def extract_xcf_to_pngs(xcf_path, output_dir, layer_name=None):
-    """Open a .xcf file, export one layer and all vector paths as PNG masks."""
+def export_image_to_pngs(image, output_dir, layer_name=None):
+    """Export a layer and all vector paths as PNG masks from an already-open image."""
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
-
-    file = Gio.File.new_for_path(xcf_path)
-    image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, file)
 
     # Export the requested layer (or first layer if no name given)
     layers = image.get_layers()
@@ -91,7 +88,18 @@ def extract_xcf_to_pngs(xcf_path, output_dir, layer_name=None):
         # Clean up
         mask_image.delete()
 
-    image.delete()
+
+def extract_xcf_to_pngs(xcf_path, output_dir, layer_name=None):
+    """Open a .xcf file, export one layer and all vector paths as PNG masks."""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
+    file = Gio.File.new_for_path(xcf_path)
+    image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, file)
+
+    export_image_to_pngs(image, output_dir, layer_name)
+
+
 def get_scale_config_path():
     """Get path to scale configuration file"""
     config_dir = GLib.get_user_config_dir()
@@ -317,7 +325,7 @@ class GarnetPlugin(Gimp.PlugIn):
         except:
             pass
 
-        # If arguments are provided (non-interactive mode), use them directly
+        # If arguments are provided (non-interactive/batch mode), use them directly
         if xcf_path and output_dir:
             # Strip layer_name and convert empty string to None
             if layer_name:
@@ -351,18 +359,10 @@ class GarnetPlugin(Gimp.PlugIn):
         vbox.set_margin_bottom(10)
         dialog.get_content_area().add(vbox)
 
-        # XCF file chooser
-        xcf_label = Gtk.Label(label="Select XCF file:")
-        xcf_label.set_halign(Gtk.Align.START)
-        vbox.pack_start(xcf_label, False, False, 0)
-
-        xcf_chooser = Gtk.FileChooserButton(title="Select XCF file")
-        xcf_chooser.set_action(Gtk.FileChooserAction.OPEN)
-        xcf_filter = Gtk.FileFilter()
-        xcf_filter.set_name("XCF files")
-        xcf_filter.add_pattern("*.xcf")
-        xcf_chooser.add_filter(xcf_filter)
-        vbox.pack_start(xcf_chooser, False, False, 0)
+        # In GUI mode, use the currently open image
+        info_label = Gtk.Label(label="Exporting current image")
+        info_label.set_halign(Gtk.Align.START)
+        vbox.pack_start(info_label, False, False, 0)
 
         # Output directory chooser
         output_label = Gtk.Label(label="Select output directory:")
@@ -385,15 +385,8 @@ class GarnetPlugin(Gimp.PlugIn):
         dialog.show_all()
 
         if dialog.run() == Gtk.ResponseType.OK:
-            xcf_path = xcf_chooser.get_filename()
             output_dir = output_chooser.get_filename()
             layer_name = layer_entry.get_text().strip() or None
-
-            if not xcf_path:
-                dialog.destroy()
-                error_msg = "Please select an XCF file!"
-                error = GLib.Error.new_literal(Gimp.PlugIn.error_quark(), error_msg, 0)
-                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, error)
 
             if not output_dir:
                 dialog.destroy()
@@ -402,7 +395,7 @@ class GarnetPlugin(Gimp.PlugIn):
                 return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, error)
 
             try:
-                extract_xcf_to_pngs(xcf_path, output_dir, layer_name)
+                export_image_to_pngs(image, output_dir, layer_name)
                 if layer_name:
                     Gimp.message(f"Successfully exported layer '{layer_name}' and vector paths to {output_dir}")
                 else:
