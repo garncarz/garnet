@@ -27,7 +27,11 @@ MIN_AREA_UM2 = math.pi * (MIN_DIAMETER_UM / 2) ** 2
 
 
 def export_image_to_pngs(image, output_dir, layer_name=None):
-    """Export a layer and all vector paths as PNG masks from an already-open image."""
+    """Export a layer and all vector paths as PNG masks from an already-open image.
+
+    In addition to PNG exports, also write a YOLO-seg label file (image.txt)
+    containing polygon coordinates derived directly from the GIMP Paths (vectors).
+    """
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
@@ -47,11 +51,45 @@ def export_image_to_pngs(image, output_dir, layer_name=None):
             image_file = Gio.File.new_for_path(os.path.join(output_dir, "image.png"))
             Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, image_file, None)
 
-    # Export each vector path as a mask
+    # Prepare YOLO segmentation labels (vectors exported directly as polygons)
+    img_w, img_h = image.get_width(), image.get_height()
+    yolo_lines = []  # one line per polygon: "class x1 y1 x2 y2 ..." (normalized)
+
+    # Export each vector path as a mask, and gather polygons for YOLO labels
     paths = image.get_paths()
     for i, v in enumerate(paths):
+        # Build YOLO polygons from path strokes
+        try:
+            strokes = v.get_strokes()
+        except Exception:
+            strokes = []
+        for stroke_id in strokes:
+            try:
+                coords, closed = v.stroke_interpolate(stroke_id, 2.0)  # precision ~2px
+            except Exception:
+                continue
+            # Expect coords as [x0, y0, x1, y1, ...]
+            if not coords or len(coords) < 6:
+                continue
+            if not closed:
+                # Skip open strokes for YOLO polygons
+                continue
+            # Normalize and write line
+            it = iter(coords)
+            xy = []
+            for x, y in zip(it, it):
+                # Guard against zero dimension
+                nx = (x / img_w) if img_w else 0.0
+                ny = (y / img_h) if img_h else 0.0
+                xy.append(nx)
+                xy.append(ny)
+            if len(xy) >= 6:
+                # Single-class default: 0
+                line = "0 " + " ".join(f"{v:.6f}" for v in xy)
+                yolo_lines.append(line)
+
         # Create a new grayscale image for the mask
-        mask_image = Gimp.Image.new(image.get_width(), image.get_height(), Gimp.ImageBaseType.GRAY)
+        mask_image = Gimp.Image.new(img_w, img_h, Gimp.ImageBaseType.GRAY)
 
         # Create a layer filled with black
         mask_layer = Gimp.Layer.new(mask_image, "mask",
@@ -66,11 +104,18 @@ def export_image_to_pngs(image, output_dir, layer_name=None):
         new_path = Gimp.Path.new(mask_image, v.get_name())
         mask_image.insert_path(new_path, None, 0)
 
-        # Copy all strokes from the original path
-        strokes = v.get_strokes()
+        # Copy all strokes from the original path into mask image path
+        try:
+            strokes = v.get_strokes()
+        except Exception:
+            strokes = []
         for stroke_id in strokes:
-            stroke_type, controlpoints, closed = v.stroke_get_points(stroke_id)
-            new_path.stroke_new_from_points(stroke_type, controlpoints, closed)
+            try:
+                stroke_type, controlpoints, closed = v.stroke_get_points(stroke_id)
+                new_path.stroke_new_from_points(stroke_type, controlpoints, closed)
+            except Exception:
+                # Skip strokes we fail to copy
+                continue
 
         # Convert path to selection in the mask image
         Gimp.Selection.none(mask_image)
@@ -87,6 +132,15 @@ def export_image_to_pngs(image, output_dir, layer_name=None):
 
         # Clean up
         mask_image.delete()
+
+    # Write YOLO labels next to the exported PNG image (same stem: image.txt)
+    try:
+        label_path = os.path.join(output_dir, "image.txt")
+        with open(label_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(yolo_lines))
+    except Exception:
+        # Non-fatal if label writing fails
+        pass
 
 
 def extract_xcf_to_pngs(xcf_path, output_dir, layer_name=None):
