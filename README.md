@@ -78,8 +78,13 @@ yolo segment val model=~/runs/segment/train/weights/best.pt data=data.yaml
 ```
 Predict:
 ```
-yolo segment predict model=~/runs/segment/train/weights/best.pt source=images/val
+yolo segment predict model=~/runs/segment/train/weights/best.pt source=images/val save=True save_txt=True
 ```
+
+## Converting YOLO Predictions to SVG Paths
+After running YOLO prediction with `save_txt=True`, use `yolo_labels_to_svg.py` to convert the generated label files into SVG paths that can be imported back into GIMP: `./yolo_labels_to_svg.py`
+
+This generates `.svg` files containing vector paths for each detected object. You can then import these SVG files into GIMP (`Import Path...` under Paths view, not opening or dragging directly) to convert predictions into editable Paths for refinement or measurement.
 
 ## Label Format
 `image.txt` lines:
