@@ -2,6 +2,8 @@
 import argparse
 from pathlib import Path
 from PIL import Image
+import numpy as np
+from skimage.measure import approximate_polygon
 
 def parse_yolo_seg_line(line, w, h):
     parts = line.strip().split()
@@ -28,7 +30,7 @@ def path_d_from_points(pts):
     segs.append("Z")
     return " ".join(segs)
 
-def labels_to_svg(img_path: Path, lbl_path: Path, out_path: Path):
+def labels_to_svg(img_path: Path, lbl_path: Path, out_path: Path, tolerance: float = 0):
     with Image.open(img_path) as im:
         w, h = im.size
 
@@ -38,6 +40,11 @@ def labels_to_svg(img_path: Path, lbl_path: Path, out_path: Path):
         cls, pts = parse_yolo_seg_line(line, w, h)
         if cls is None or len(pts) < 3:
             continue
+        # Simplify polygon if tolerance > 0
+        if tolerance > 0:
+            pts_array = np.array(pts)
+            simplified_array = approximate_polygon(pts_array, tolerance=tolerance)
+            pts = [(x, y) for x, y in simplified_array]
         d = path_d_from_points(pts)
         if d:
             paths.append(d)
@@ -68,6 +75,7 @@ def main():
     ap.add_argument("--labels", default="", help="Dir with labels/*.txt (default: CWD)")
     ap.add_argument("--images", default="", help="Dir with images (optional; defaults to labels/..)")
     ap.add_argument("--out", default="", help="Output dir for SVGs (default: CWD)")
+    ap.add_argument("--tolerance", type=float, default=5.0, help="Simplification tolerance in pixels (default: 5.0, 0=no simplification)")
     args = ap.parse_args()
 
     lbl_dir = Path(args.labels) if args.labels else Path.cwd()
@@ -90,7 +98,7 @@ def main():
             print(f"Skip {lbl} (no matching image in: {', '.join(str(d) for d in search_dirs)})")
             continue
         out_svg = out_dir / f"{stem}.svg"
-        labels_to_svg(img, lbl, out_svg)
+        labels_to_svg(img, lbl, out_svg, tolerance=args.tolerance)
         print(f"Wrote {out_svg}")
     if not any_labels:
         print(f"No label files (*.txt) found in {lbl_dir}")
