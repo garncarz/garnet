@@ -26,30 +26,60 @@ MIN_DIAMETER_UM = 75.0
 MIN_AREA_UM2 = math.pi * (MIN_DIAMETER_UM / 2) ** 2
 
 
-def export_image_to_pngs(image, output_dir, layer_name=None):
-    """Export a layer and all vector paths as PNG masks from an already-open image.
+def duplicate_layer_to_new_image(source_image, layer):
+    """Duplicate the whole image and remove all layers except the target one."""
+    tmp_img = source_image.duplicate()
+    for l in tmp_img.get_layers():
+        if l.get_name() != layer.get_name():
+            tmp_img.remove_layer(l)
+    return tmp_img
 
-    In addition to PNG exports, also write a YOLO-seg label file (image.txt)
-    containing polygon coordinates derived directly from the GIMP Paths (vectors).
+
+def export_image_to_pngs(image, output_dir, layer_name=None):
+    """Export a single layer (not the merged image) and all vector paths as PNG masks.
+
+    Writes image.png (only the requested layer) plus mask_N.png and image.txt labels.
     """
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    # Export the requested layer (or first layer if no name given)
+    # Determine target layer (by name or last layer)
     layers = image.get_layers()
+    target_layer = None
     if layers:
         if layer_name:
-            # Find layer by name
-            for layer in layers:
-                if layer.get_name() == layer_name:
-                    image_file = Gio.File.new_for_path(os.path.join(output_dir, "image.png"))
-                    Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, image_file, None)
-                    break
-        else:
-            # Use first layer
-            layer = layers[0]
+            for l in layers:
+                try:
+                    if l.get_name() == layer_name:
+                        target_layer = l
+                        break
+                except Exception:
+                    continue
+        if not target_layer:
+            target_layer = layers[-1]
+
+    # Save only the single layer by duplicating it into a temporary image and saving that image.
+    # Avoid changing visibility on the original image.
+    if target_layer:
+        tmp_img = None
+        try:
+            tmp_img = duplicate_layer_to_new_image(image, target_layer)
+            image_file = Gio.File.new_for_path(os.path.join(output_dir, "image.png"))
+            Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, tmp_img, image_file, None)
+        except Exception:
+            # Fallback: save the full image if anything goes wrong
             image_file = Gio.File.new_for_path(os.path.join(output_dir, "image.png"))
             Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, image_file, None)
+        finally:
+            if tmp_img:
+                try:
+                    tmp_img.delete()
+                except Exception:
+                    pass
+    else:
+        # No layers found - save merged image as fallback
+        image_file = Gio.File.new_for_path(os.path.join(output_dir, "image.png"))
+        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, image, image_file, None)
 
     # Prepare YOLO segmentation labels (vectors exported directly as polygons)
     img_w, img_h = image.get_width(), image.get_height()
@@ -434,11 +464,13 @@ class GarnetPlugin(Gimp.PlugIn):
             pass
 
         # If arguments are provided (non-interactive/batch mode), use them directly
-        if xcf_path and output_dir:
+        if xcf_path:
+            # Default output_dir to the directory of the XCF file (project dir) if not provided
+            if not output_dir:
+                output_dir = default_output_dir_for_xcf(xcf_path, image)
             # Strip layer_name and convert empty string to None
             if layer_name:
                 layer_name = layer_name.strip() or None
-
             try:
                 extract_xcf_to_pngs(xcf_path, output_dir, layer_name)
                 if layer_name:
@@ -448,7 +480,7 @@ class GarnetPlugin(Gimp.PlugIn):
                 return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
             except Exception as e:
                 error_msg = f"Export failed: {str(e)}"
-                error = GLib.Error.new_literal(Gimp.PlugIn.error_quark(), error_msg, 0)
+                error = GLib.Error.new_literal(GLib.PErrorQuark(), error_msg, 0)
                 return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, error)
 
         # Interactive mode - show dialog
@@ -479,6 +511,18 @@ class GarnetPlugin(Gimp.PlugIn):
 
         output_chooser = Gtk.FileChooserButton(title="Select output directory")
         output_chooser.set_action(Gtk.FileChooserAction.SELECT_FOLDER)
+        # Prefill with the XCF project's directory when available, fallback to current working dir
+        try:
+            pref = default_output_dir_for_xcf(xcf_path, image)
+            if pref and os.path.isdir(pref):
+                output_chooser.set_current_folder(pref)
+            else:
+                output_chooser.set_current_folder(os.getcwd())
+        except Exception:
+            try:
+                output_chooser.set_current_folder(os.getcwd())
+            except Exception:
+                pass
         vbox.pack_start(output_chooser, False, False, 0)
 
         # Layer name entry
@@ -507,7 +551,7 @@ class GarnetPlugin(Gimp.PlugIn):
                 if layer_name:
                     Gimp.message(f"Successfully exported layer '{layer_name}' and vector paths to {output_dir}")
                 else:
-                    Gimp.message(f"Successfully exported first layer and vector paths to {output_dir}")
+                    Gimp.message(f"Successfully exported last layer and vector paths to {output_dir}")
                 dialog.destroy()
                 return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
             except Exception as e:
@@ -669,5 +713,47 @@ class GarnetPlugin(Gimp.PlugIn):
 
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
+
+def default_output_dir_for_xcf(xcf_path=None, image=None):
+    """Return a directory named after the XCF project (basename without extension).
+    If the project path is available, create <project-dir>/<project-name>/ and return it.
+    Fallback: current working directory.
+    """
+    try:
+        # Prefer explicit xcf_path
+        if xcf_path:
+            proj_dir = os.path.dirname(xcf_path) or os.getcwd()
+            project_name = os.path.splitext(os.path.basename(xcf_path))[0]
+            if project_name:
+                out_dir = os.path.abspath(os.path.join(proj_dir, project_name))
+                try:
+                    os.makedirs(out_dir, exist_ok=True)
+                except Exception:
+                    pass
+                return out_dir
+
+        # Fallback to image's file path
+        if image:
+            try:
+                file = image.get_file()
+                if file:
+                    p = file.get_path()
+                    if p:
+                        proj_dir = os.path.dirname(p) or os.getcwd()
+                        project_name = os.path.splitext(os.path.basename(p))[0]
+                        if project_name:
+                            out_dir = os.path.abspath(os.path.join(proj_dir, project_name))
+                            try:
+                                os.makedirs(out_dir, exist_ok=True)
+                            except Exception:
+                                pass
+                            return out_dir
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Final fallback: current working directory
+    return os.getcwd()
 
 Gimp.main(GarnetPlugin.__gtype__, sys.argv)
