@@ -182,14 +182,14 @@ def save_scale(image, pixels, micrometers):
         'micrometers': micrometers,
         'pixels_per_micrometer': pixels / micrometers if micrometers > 0 else 1.0
     }
-    
+
     # Try to save to project-specific config for saved XCF files
     project_config_path = get_project_config_path(image)
     if project_config_path:
         with open(project_config_path, 'w') as f:
             json.dump(scale_data, f, indent=2)
         return
-    
+
     # For unsaved images, save to global config with image ID
     global_config_path = get_global_config_path()
     config = {}
@@ -199,15 +199,15 @@ def save_scale(image, pixels, micrometers):
                 config = json.load(f)
         except Exception:
             config = {}
-    
+
     # Ensure 'scales' key exists
     if 'scales' not in config:
         config['scales'] = {}
-    
+
     # Store under image ID
     image_id = str(image.get_id())
     config['scales'][image_id] = scale_data
-    
+
     with open(global_config_path, 'w') as f:
         json.dump(config, f, indent=2)
 
@@ -223,7 +223,7 @@ def load_scale(image):
                 return config['pixels'], config['micrometers'], config['pixels_per_micrometer']
         except Exception:
             pass
-    
+
     # Check global config for unsaved images
     global_config_path = get_global_config_path()
     if os.path.exists(global_config_path):
@@ -237,7 +237,7 @@ def load_scale(image):
                         return scale_data['pixels'], scale_data['micrometers'], scale_data['pixels_per_micrometer']
         except Exception:
             pass
-    
+
     return None
 
 
@@ -597,6 +597,9 @@ class GarnetPlugin(Gimp.PlugIn):
         total_area = 0
         total_area_um2 = 0.0
 
+        # Store label layer info to create them after all area layers
+        label_layers_info = []
+
         for i, path in enumerate(paths):
             try:
                 path_name = path.get_name()
@@ -635,12 +638,26 @@ class GarnetPlugin(Gimp.PlugIn):
             center_x = actual_x + (actual_w // 2)
             center_y = actual_y + (actual_h // 2)
             text_layer_name = f"Label_{path_name}"
-            text_layer = create_text_layer(image, text_content, center_x, center_y, text_layer_name, bright_color)
+
+            # Store label info to create later (after all area layers)
+            label_layers_info.append({
+                'text_content': text_content,
+                'center_x': center_x,
+                'center_y': center_y,
+                'text_layer_name': text_layer_name,
+                'bright_color': bright_color
+            })
 
             if scale_config and is_small_area:
                 Gimp.message(f"Path '{path_name}': {pixel_count} pixels ({area_um2:.1f} µm²) - BELOW THRESHOLD")
             else:
                 Gimp.message(f"Path '{path_name}': {pixel_count} pixels (layer: {layer_name})")
+
+        # Now create all label layers on top
+        for label_info in label_layers_info:
+            create_text_layer(image, label_info['text_content'],
+                            label_info['center_x'], label_info['center_y'],
+                            label_info['text_layer_name'], label_info['bright_color'])
 
         # End undo group
         image.undo_group_end()
