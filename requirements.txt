@@ -1,6 +1,8 @@
+click
 numpy
 opencv-python
 pillow
 pytesseract
+pyyaml
 scikit-image
 ultralytics
