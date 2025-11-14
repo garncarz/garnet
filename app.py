@@ -303,9 +303,13 @@ def gimp_create_xcf(image_path, svg_dir, output):
         # Import each SVG as paths (not as layers)
         svg_imports += f'''
 vectors_file = Gio.File.new_for_path("{svg_file}")
-Gimp.get_pdb().lookup_procedure("gimp-path-import-from-file").run(
-    Gimp.get_pdb().lookup_procedure("gimp-path-import-from-file").create_config().set_property("image", img).set_property("file", vectors_file).set_property("merge", False).set_property("scale", False)
-)
+proc = Gimp.get_pdb().lookup_procedure("gimp-path-import-from-file")
+cfg = proc.create_config()
+cfg.set_property("image", img)
+cfg.set_property("file", vectors_file)
+cfg.set_property("merge", False)
+cfg.set_property("scale", False)
+proc.run(cfg)
 '''
     
     batch_script = f'''
