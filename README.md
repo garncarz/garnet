@@ -39,6 +39,24 @@ and to measure their areas.
    mask_0.png ...
    ```
 
+## Export (cmd line)
+```
+flatpak run org.gimp.GIMP -i --batch-interpreter=python-fu-eval -b '
+import gi
+gi.require_version("Gimp","3.0")
+from gi.repository import Gimp
+
+img = Gimp.Image.new(1,1,Gimp.ImageBaseType.RGB)
+
+proc = Gimp.get_pdb().lookup_procedure("garnet-export-xcf")
+cfg = proc.create_config()
+cfg.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
+cfg.set_property("image", img)
+cfg.set_property("xcf-path", "input.xcf")
+proc.run(cfg)
+' --quit
+```
+
 ## YOLO Dataset Assembly
 From a directory containing multiple exported folders:
 ```
