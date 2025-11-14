@@ -154,36 +154,90 @@ def extract_xcf_to_pngs(xcf_path, output_dir, layer_name=None):
     export_image_to_pngs(image, output_dir, layer_name)
 
 
-def get_scale_config_path():
-    """Get path to scale configuration file"""
+def get_global_config_path():
+    """Get path to global configuration file"""
     config_dir = GLib.get_user_config_dir()
-    garnet_dir = os.path.join(config_dir, 'GIMP', '3.0', 'plug-ins', 'garnet')
-    os.makedirs(garnet_dir, exist_ok=True)
-    return os.path.join(garnet_dir, 'scale_config.json')
+    return os.path.join(config_dir, 'garnet-plugin.json')
 
 
-def save_scale(pixels, micrometers):
-    """Save scale configuration to JSON file"""
-    config_path = get_scale_config_path()
-    config = {
+def get_project_config_path(image):
+    """Get path to project-specific configuration file for saved XCF files"""
+    try:
+        file = image.get_file()
+        if file:
+            xcf_path = file.get_path()
+            if xcf_path:
+                # Change extension from .xcf to .json
+                base_path = os.path.splitext(xcf_path)[0]
+                return base_path + '.json'
+    except Exception:
+        pass
+    return None
+
+
+def save_scale(image, pixels, micrometers):
+    """Save scale configuration to appropriate location based on image state"""
+    scale_data = {
         'pixels': pixels,
         'micrometers': micrometers,
         'pixels_per_micrometer': pixels / micrometers if micrometers > 0 else 1.0
     }
-    with open(config_path, 'w') as f:
-        json.dump(config, f)
-
-
-def load_scale():
-    """Load scale configuration from JSON file, returns (pixels, micrometers, pixels_per_micrometer) or None"""
-    config_path = get_scale_config_path()
-    if os.path.exists(config_path):
+    
+    # Try to save to project-specific config for saved XCF files
+    project_config_path = get_project_config_path(image)
+    if project_config_path:
+        with open(project_config_path, 'w') as f:
+            json.dump(scale_data, f, indent=2)
+        return
+    
+    # For unsaved images, save to global config with image ID
+    global_config_path = get_global_config_path()
+    config = {}
+    if os.path.exists(global_config_path):
         try:
-            with open(config_path, 'r') as f:
+            with open(global_config_path, 'r') as f:
+                config = json.load(f)
+        except Exception:
+            config = {}
+    
+    # Ensure 'scales' key exists
+    if 'scales' not in config:
+        config['scales'] = {}
+    
+    # Store under image ID
+    image_id = str(image.get_id())
+    config['scales'][image_id] = scale_data
+    
+    with open(global_config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+
+
+def load_scale(image):
+    """Load scale configuration from appropriate location, returns (pixels, micrometers, pixels_per_micrometer) or None"""
+    # First check for project-specific config (for saved XCF files)
+    project_config_path = get_project_config_path(image)
+    if project_config_path and os.path.exists(project_config_path):
+        try:
+            with open(project_config_path, 'r') as f:
                 config = json.load(f)
                 return config['pixels'], config['micrometers'], config['pixels_per_micrometer']
         except Exception:
-            return None
+            pass
+    
+    # Check global config for unsaved images
+    global_config_path = get_global_config_path()
+    if os.path.exists(global_config_path):
+        try:
+            with open(global_config_path, 'r') as f:
+                config = json.load(f)
+                if 'scales' in config:
+                    image_id = str(image.get_id())
+                    if image_id in config['scales']:
+                        scale_data = config['scales'][image_id]
+                        return scale_data['pixels'], scale_data['micrometers'], scale_data['pixels_per_micrometer']
+        except Exception:
+            pass
+    
     return None
 
 
@@ -506,7 +560,7 @@ class GarnetPlugin(Gimp.PlugIn):
             if dialog.run() == Gtk.ResponseType.OK:
                 try:
                     micrometers = float(entry.get_text())
-                    save_scale(longer_side, micrometers)
+                    save_scale(image, longer_side, micrometers)
                     Gimp.message(f"Scale set: {longer_side} pixels = {micrometers} µm\n({longer_side/micrometers:.2f} pixels per micrometer)")
                     dialog.destroy()
                     return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
@@ -520,7 +574,7 @@ class GarnetPlugin(Gimp.PlugIn):
             return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
 
     def run_paths_areas(self, procedure, run_mode, image, drawables, config, run_data):
-        scale_config = load_scale()
+        scale_config = load_scale(image)
 
         paths = image.get_paths()
         num_paths = len(paths)
