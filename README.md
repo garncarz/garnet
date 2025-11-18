@@ -1,122 +1,145 @@
-# Garnet GIMP Plugin + YOLO Segmentation Pipeline
+# Garnet - GIMP + YOLO Segmentation Pipeline
 
-The goal of this project is to be able to find small splinters of garnet rock from microscopic pictures
-and to measure their areas.
+Automated detection and measurement of garnet splinters from microscopic images using GIMP and YOLO11 segmentation.
 
-## Features
-- Set scale from selection (stores pixel ↔ micrometer scale).
-- Compute path (vector) areas (uses scale if set).
-- Export layer + each Path as:
-  - image.png (chosen or first layer)
-  - mask_*.png (raster masks per Path)
-  - image.txt (YOLO polygon segmentation labels derived directly from Paths)
-- Dataset assembler (`prepare_yolo.py`) builds YOLO11 segmentation dataset structure.
+## Overview
 
-## Installation (GIMP 3)
-1. Ensure GIMP 3 (Flatpak or native) is installed.
-2. Place plugin files in:
+Garnet combines GIMP's vector path capabilities with YOLO11 deep learning to:
+1. **Train** a segmentation model from manually labeled XCF files
+2. **Predict** and measure garnet splinters in new microscopic images
+3. **Measure** areas automatically with pixel-to-micrometer scale extraction
+
+## Quick Start
+
+### Installation
+
+1. **Install Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
    ```
-   ~/.config/GIMP/3.0/plug-ins/garnet/
-   ```
-3. Flatpak: grant filesystem access if needed:
-   ```
+
+2. **Install GIMP 3 (Flatpak recommended):**
+   ```bash
+   flatpak install flathub org.gimp.GIMP
    flatpak override --user org.gimp.GIMP --filesystem=home
    ```
-4. Start GIMP. Menu path:
-   ```
-   Filters → Garnet → (tools)
-   ```
 
-## Export (GUI)
-1. Open an XCF.
-2. Filters → Garnet → Export XCF to PNGs.
-3. (Optional) choose output directory (empty = current working directory).
-4. (Optional) enter layer name (empty = first layer).
-5. Output:
-   ```
-   image.png
-   image.txt         (YOLO polygons)
-   mask_0.png ...
+3. **Install GIMP plugin:**
+   ```bash
+   mkdir -p ~/.config/GIMP/3.0/plug-ins/garnet/
+   cp garnet.py ~/.config/GIMP/3.0/plug-ins/garnet/
+   chmod +x ~/.config/GIMP/3.0/plug-ins/garnet/garnet.py
    ```
 
-## Export (cmd line)
-```
-flatpak run org.gimp.GIMP -i --batch-interpreter=python-fu-eval -b '
-import gi
-gi.require_version("Gimp","3.0")
-from gi.repository import Gimp
+### Training Workflow
 
-img = Gimp.Image.new(1,1,Gimp.ImageBaseType.RGB)
+Train a model from labeled XCF files in your project directory:
 
-proc = Gimp.get_pdb().lookup_procedure("garnet-export-xcf")
-cfg = proc.create_config()
-cfg.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
-cfg.set_property("image", img)
-cfg.set_property("xcf-path", "input.xcf")
-proc.run(cfg)
-' --quit
+```bash
+# Train from XCF files with labeled paths
+./app.py train --epochs 100
+
+# Or run steps individually:
+./app.py gimp-export          # Export XCF → images + labels
+./app.py yolo-prepare         # Prepare YOLO dataset
+./app.py yolo-train           # Train model → trained.pt
 ```
 
-## YOLO Dataset Assembly
-From a directory containing multiple exported folders:
+**Training project structure:**
 ```
-exports/
-  rock1/image.png image.txt mask_0.png ...
-  rock2/...
-  rock3/...
-```
-Run:
-```
-cd exports
-python3 prepare_yolo.py --outdir ~/datasets/garnet_yolo --class-name rock --class-id 0 --val-frac 0.2
-```
-Result:
-```
-garnet_yolo/
-  images/train/*.png
-  images/val/*.png
-  labels/train/*.txt
-  labels/val/*.txt
-  data.yaml
+project/
+├── sample1.xcf              # XCF files with manually drawn paths
+├── sample2.xcf
+├── sample1/                 # Auto-created: exported data
+│   ├── image.png
+│   ├── image.txt            # YOLO labels from paths
+│   └── mask_*.png
+├── images/                  # Auto-created: YOLO dataset
+│   ├── train/*.png
+│   └── val/*.png
+├── labels/
+│   ├── train/*.txt
+│   └── val/*.txt
+├── data.yaml
+└── trained.pt              # Final trained model
 ```
 
-## Train YOLO11 Segmentation
-Install dependencies:
-```
-pip install ultralytics
-```
-Train:
-```
-cd ~/datasets/garnet_yolo
-yolo segment train data=data.yaml model=yolo11n-seg.pt epochs=100 imgsz=640
-```
-Validate (later):
-```
-yolo segment val model=~/runs/segment/train/weights/best.pt data=data.yaml
-```
-Predict:
-```
-yolo segment predict model=~/runs/segment/train/weights/best.pt source=images/val save=True save_txt=True
+### Prediction Workflow
+
+Analyze a new microscopic image:
+
+```bash
+# Complete prediction pipeline
+./app.py predict input123.png --export-png
+
+# Or run steps individually:
+./app.py yolo-predict input123.png        # Predict → input123/
+./app.py yolo-to-svg input123/labels/     # Convert to SVG
+./app.py gimp-create-xcf input123.png input123/  # Create XCF
+./app.py get-scale input123.png           # Extract scale → input123.json
+./app.py gimp-compute-areas input123.xcf  # Measure areas
 ```
 
-## Converting YOLO Predictions to SVG Paths
-After running YOLO prediction with `save_txt=True`, use `yolo_labels_to_svg.py` to convert the generated label files into SVG paths that can be imported back into GIMP: `./yolo_labels_to_svg.py`
+**Prediction output structure:**
+```
+./
+├── input123.png            # Original input
+├── input123/               # YOLO predictions
+│   ├── labels/*.txt        # YOLO label files
+│   └── *.svg               # SVG paths (from labels)
+├── input123.xcf            # XCF with image + predicted paths
+├── input123.json           # Scale information
+└── input123.png            # Final annotated image (if --export-png)
+```
 
-This generates `.svg` files containing vector paths for each detected object. You can then import these SVG files into GIMP (`Import Path...` under Paths view, not opening or dragging directly) to convert predictions into editable Paths for refinement or measurement.
+## Available Commands
+
+### Individual Commands
+
+- `gimp-export` - Export XCF files to images and YOLO labels
+- `yolo-prepare` - Assemble YOLO dataset from exported images
+- `yolo-train` - Train YOLO11 segmentation model
+- `yolo-val` - Validate trained model
+- `yolo-predict` - Run prediction on new image
+- `yolo-to-svg` - Convert YOLO labels to SVG paths
+- `gimp-create-xcf` - Create XCF from image + SVG paths
+- `get-scale` - Extract scale from image (OCR scale bar)
+- `gimp-compute-areas` - Compute and visualize path areas
+
+### Metacommands
+
+- `train` - Complete training workflow (export + prepare + train)
+- `predict` - Complete prediction workflow (predict + svg + xcf + scale + areas)
+
+## GIMP Plugin Features
+
+When using GIMP interactively (`Filters → Garnet`):
+
+- **Set Scale from Selection** - Define pixel ↔ micrometer conversion
+- **Export XCF to PNGs** - Export layers and paths to images/labels
+- **Compute Path Areas** - Measure and visualize path areas with colored overlays
 
 ## Label Format
-`image.txt` lines:
+
+YOLO segmentation labels (`image.txt`):
 ```
 <class_id> x1 y1 x2 y2 ... (normalized polygon vertices, ≥3 points)
 ```
-All Paths exported as class 0 (extend later if needed).
 
-## Troubleshooting
-- No menu entry: ensure file is executable and no syntax errors (check GIMP console messages).
-- Flatpak cannot read files: add overrides (`flatpak override ...`).
-- Very low validation metrics: increase dataset size; ensure multiple val images; raise `imgsz` (e.g. 1024) for many small objects.
+All objects use class 0 by default (extend if needed for multiple classes).
 
 ## Requirements
-- GIMP 3.x (Python plug‑ins enabled)
+
 - Python 3.10+
-- For training: `ultralytics`, `torch` (GPU recommended)
+- GIMP 3.x (with Python plug-ins enabled)
+- For training: GPU recommended (CPU training is slow)
+
+See `requirements.txt` for Python dependencies.
+
+## Troubleshooting
+
+- **No GIMP menu entry:** Ensure plugin is executable and in correct directory
+- **Flatpak permission errors:** Run `flatpak override --user org.gimp.GIMP --filesystem=home`
+- **Low validation metrics:** Increase dataset size, ensure diverse validation images, try larger `--imgsz` (e.g., 1024)
+- **Scale extraction fails:** Scale bar must be visible and readable; set manually in GIMP if needed
+
