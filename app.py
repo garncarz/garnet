@@ -270,13 +270,12 @@ def yolo_to_svg(labels_dir, images, out, tolerance):
 @click.argument('svg_dir')
 @click.option('--output', default=None, help='Output XCF path (default: <image_stem>.xcf)')
 def gimp_create_xcf(image_path, svg_dir, output):
-    """Create XCF file with image layer and SVG paths.
+    """Create XCF file with image layer and SVG paths imported.
 
     IMAGE_PATH: Input image file
     SVG_DIR: Directory containing SVG files with paths
 
-    Creates a new XCF file with the image as a layer and SVG paths imported
-    as GIMP paths (not layers).
+    Creates a new XCF file with the image as a layer and imports SVGs as GIMP paths.
     """
     image_path = Path(image_path)
     svg_dir = Path(svg_dir)
@@ -287,39 +286,36 @@ def gimp_create_xcf(image_path, svg_dir, output):
 
     if output is None:
         output = f"{image_path.stem}.xcf"
-
     output_path = Path(output)
 
     click.echo(f"Creating XCF file {output_path}...")
 
-    # Find all SVG files in the directory
-    svg_files = list(svg_dir.glob('*.svg'))
+    svg_files = list(svg_dir.glob("*.svg"))
     if not svg_files:
         click.echo(f"⚠ Warning: No SVG files found in {svg_dir}")
 
-    # Build GIMP batch script to create XCF
+    # Build GIMP batch script
     svg_imports = ""
     for svg_file in svg_files:
-        # Import each SVG as paths (not as layers)
         svg_imports += f'''
-vectors_file = Gio.File.new_for_path("{svg_file}")
-proc = Gimp.get_pdb().lookup_procedure("gimp-path-import-from-file")
-cfg = proc.create_config()
-cfg.set_property("image", img)
-cfg.set_property("file", vectors_file)
-cfg.set_property("merge", False)
-cfg.set_property("scale", False)
-proc.run(cfg)
+# Import SVG paths into image
+svg_file = Gio.File.new_for_path("{svg_file.resolve()}")
+img.import_paths_from_file(svg_file, None, 0)
+print("Imported SVG as paths: {svg_file.name}")
 '''
 
     batch_script = f'''
 import gi
-gi.require_version("Gimp","3.0")
+gi.require_version("Gimp", "3.0")
 from gi.repository import Gimp, Gio
 
-# Load the image
-img_file = Gio.File.new_for_path("{image_path}")
+# Load main raster image
+img_file = Gio.File.new_for_path("{image_path.resolve()}")
 img = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, img_file)
+
+# Rename first layer to match input file name
+first_layer = img.get_layers()[0]
+first_layer.set_name("{image_path.stem}")
 
 # Import SVG files as paths
 {svg_imports}
