@@ -20,6 +20,9 @@ import json
 import os
 import math
 
+# Option to display area in pixels^2 in labels
+DISPLAY_AREA_ALSO_IN_PIXELS = False
+
 # Minimum diameter threshold in micrometers
 MIN_DIAMETER_UM = 75.0
 # Minimum area for a circle with diameter MIN_DIAMETER_UM
@@ -695,7 +698,10 @@ class GarnetPlugin(Gimp.PlugIn):
                 area_um2 = (pixel_count / (ppm * ppm))
                 total_area_um2 += area_um2
                 is_small_area = area_um2 < MIN_AREA_UM2
-                text_content = f"{pixel_count} px²\n{area_um2:.1f} µm²"
+                if DISPLAY_AREA_ALSO_IN_PIXELS:
+                    text_content = f"{pixel_count} px²\n{area_um2:.1f} µm²"
+                else:
+                    text_content = f"{area_um2:.1f} µm²"
             else:
                 text_content = f"{pixel_count} px²"
 
