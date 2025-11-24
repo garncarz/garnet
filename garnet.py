@@ -23,6 +23,23 @@ import math
 # Option to display area in pixels^2 in labels
 DISPLAY_AREA_ALSO_IN_PIXELS = False
 
+# Mesh categories and area limits (mm, µm²)
+MESH_CATEGORIES_MM = [0.063, 0.075, 0.089, 0.104, 0.125, 0.15, 0.16, 0.18, 0.2, 0.25, 0.42, 0.5, 0.6, 'bigger']
+MESH_AREA_LIMITS = [0.003115665, 0.004415625, 0.006217985, 0.00849056, 0.012265625, 0.0176625, 0.020096, 0.025434, 0.0314, 0.0490625, 0.138474, 0.19625, 0.2826]
+
+def get_project_csv_path(image):
+    """Get path to project-specific CSV file for saved XCF files"""
+    try:
+        file = image.get_file()
+        if file:
+            xcf_path = file.get_path()
+            if xcf_path:
+                base_path = os.path.splitext(xcf_path)[0]
+                return base_path + '.csv'
+    except Exception:
+        pass
+    return None
+
 # Minimum diameter threshold in micrometers
 MIN_DIAMETER_UM = 75.0
 # Minimum area for a circle with diameter MIN_DIAMETER_UM
@@ -669,9 +686,13 @@ class GarnetPlugin(Gimp.PlugIn):
         # Create the title text layer at top left (e.g., x=10, y=10), no centering
         create_text_layer(image, project_title, 10, 10, "Project_Title", (1.0, 1.0, 1.0), align='left')
 
+
         total_area = 0
         total_area_um2 = 0.0
         label_layers_info = []
+
+        # Prepare grain dict: grain -> {category: [area1, area2, ...]}
+        grain_dict = {}
 
         for i, path in enumerate(paths):
             try:
@@ -693,6 +714,7 @@ class GarnetPlugin(Gimp.PlugIn):
             total_area += pixel_count
 
             is_small_area = False
+            area_um2 = None
             if scale_config:
                 pixels, micrometers, ppm = scale_config
                 area_um2 = (pixel_count / (ppm * ppm))
@@ -722,6 +744,30 @@ class GarnetPlugin(Gimp.PlugIn):
                 'bright_color': bright_color
             })
 
+            if scale_config and area_um2 is not None:
+                # Parse grain from path name like '3/2' or just use path name
+                grain_num = ''
+                if '/' in path_name:
+                    parts = path_name.split('/')
+                    if len(parts) >= 1:
+                        grain_num = parts[0].strip()
+                else:
+                    grain_num = path_name.strip()
+                # Find mesh category index
+                mesh_idx = None
+                for idx, limit in enumerate(MESH_AREA_LIMITS):
+                    if area_um2 <= limit * 1e6:
+                        mesh_idx = idx
+                        break
+                if mesh_idx is None and area_um2 > MESH_AREA_LIMITS[-1] * 1e6:
+                    mesh_idx = len(MESH_CATEGORIES_MM) - 1  # 'bigger' column
+                if grain_num:
+                    if grain_num not in grain_dict:
+                        grain_dict[grain_num] = {cat: [] for cat in MESH_CATEGORIES_MM}
+                    if mesh_idx is not None:
+                        cat = MESH_CATEGORIES_MM[mesh_idx]
+                        grain_dict[grain_num][cat].append(f"{area_um2:.1f}")
+
             if scale_config and is_small_area:
                 Gimp.message(f"Path '{path_name}': {pixel_count} pixels ({area_um2:.1f} µm²) - BELOW THRESHOLD")
             else:
@@ -731,6 +777,62 @@ class GarnetPlugin(Gimp.PlugIn):
             create_text_layer(image, label_info['text_content'],
                             label_info['center_x'], label_info['center_y'],
                             label_info['text_layer_name'], label_info['bright_color'])
+
+        # Write CSV file with mesh columns respected, extra rows for overflow, and a SUM row
+        if scale_config:
+            csv_path = get_project_csv_path(image)
+            if csv_path:
+                try:
+                    with open(csv_path, 'w', encoding='utf-8') as f:
+                        mesh_cols = [str(mm) for mm in MESH_CATEGORIES_MM]
+                        header = ['grain'] + mesh_cols + ['SUM']
+                        f.write(','.join(header) + '\n')
+                        # Store sums for each mesh column
+                        mesh_sums = [0.0 for _ in MESH_CATEGORIES_MM]
+                        for grain_num, cat_dict in grain_dict.items():
+                            max_len = max(len(cat_dict[cat]) for cat in MESH_CATEGORIES_MM)
+                            if max_len == 0:
+                                f.write(','.join([grain_num] + [''] * len(mesh_cols) + ['']) + '\n')
+                                continue
+                            for i in range(max_len):
+                                row = [grain_num]
+                                row_sum = 0.0
+                                for idx, cat in enumerate(MESH_CATEGORIES_MM):
+                                    vals = cat_dict[cat]
+                                    val = vals[i] if i < len(vals) else ''
+                                    row.append(val)
+                                    if val:
+                                        try:
+                                            mesh_sums[idx] += float(val)
+                                            row_sum += float(val)
+                                        except Exception:
+                                            pass
+                                row.append(f"{row_sum:.1f}" if row_sum else '')
+                                f.write(','.join(row) + '\n')
+                        # Write SUM row
+                        total_sum = sum(mesh_sums)
+                        sum_row = ['SUM'] + [f"{s:.1f}" if s else '' for s in mesh_sums] + [f"{total_sum:.1f}" if total_sum else '']
+                        f.write(','.join(sum_row) + '\n')
+
+                        # Compute total image area in µm²
+                        img_area_um2 = None
+                        if scale_config:
+                            pixels, micrometers, ppm = scale_config
+                            img_w, img_h = image.get_width(), image.get_height()
+                            img_area_um2 = (img_w * img_h) / (ppm * ppm)
+
+                        # Write IMAGE AREA row
+                        if img_area_um2:
+                            img_area_row = ['IMAGE AREA', f"{img_area_um2:.1f}", 'µm²'] + [''] * (len(mesh_cols) - 1)
+                            f.write(','.join(img_area_row) + '\n')
+
+                        # Write PERCENTAGE row
+                        if img_area_um2 and total_sum:
+                            percent = (total_sum / img_area_um2) * 100 if img_area_um2 else 0.0
+                            percent_row = ['PERCENTAGE', f"{percent:.2f}", '%'] + [''] * (len(mesh_cols) - 1)
+                            f.write(','.join(percent_row) + '\n')
+                except Exception as e:
+                    Gimp.message(f"CSV export failed: {e}")
 
         image.undo_group_end()
 
