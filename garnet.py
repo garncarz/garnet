@@ -745,9 +745,11 @@ class GarnetPlugin(Gimp.PlugIn):
             })
 
             if scale_config and area_um2 is not None:
-                # Parse grain from path name like '3/2' or just use path name
+                # Parse grain from path name like '3/2', or treat 'Selection*' as grain '0'
                 grain_num = ''
-                if '/' in path_name:
+                if path_name.startswith('Selection'):
+                    grain_num = '0'
+                elif '/' in path_name:
                     parts = path_name.split('/')
                     if len(parts) >= 1:
                         grain_num = parts[0].strip()
