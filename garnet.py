@@ -351,8 +351,8 @@ def compute_selection_area(selection):
     return sum(1 for p in all_data if p >= 192)
 
 
-def create_text_layer(image, text_content, x, y, layer_name, text_color=(1.0, 1.0, 1.0)):
-    """Create a text layer with black outline for readability"""
+def create_text_layer(image, text_content, x, y, layer_name, text_color=(1.0, 1.0, 1.0), align='center'):
+    """Create a text layer with black outline for readability. align='center' (default) centers at (x, y), align='left' places at (x, y) directly."""
     try:
         font = Gimp.context_get_font()
         white_color = Gegl.Color()
@@ -363,7 +363,10 @@ def create_text_layer(image, text_content, x, y, layer_name, text_color=(1.0, 1.
         text_layer.set_justification(Gimp.TextJustification.CENTER)
         text_width = text_layer.get_width()
         text_height = text_layer.get_height()
-        text_layer.set_offsets(x - text_width // 2, y - text_height // 2)
+        if align == 'center':
+            text_layer.set_offsets(x - text_width // 2, y - text_height // 2)
+        else:
+            text_layer.set_offsets(x, y)
         image.select_item(Gimp.ChannelOps.REPLACE, text_layer)
         Gimp.context_set_stroke_method(Gimp.StrokeMethod.LINE)
         Gimp.context_set_line_width(3.0)
@@ -618,8 +621,8 @@ class GarnetPlugin(Gimp.PlugIn):
             return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
 
     def run_paths_areas(self, procedure, run_mode, image, drawables, config, run_data):
-        scale_config = load_scale(image)
 
+        scale_config = load_scale(image)
         paths = image.get_paths()
         num_paths = len(paths)
 
@@ -638,10 +641,33 @@ class GarnetPlugin(Gimp.PlugIn):
         # Start undo group so all operations can be undone with one Ctrl+Z
         image.undo_group_start()
 
+        # --- Add project title layer at top left ---
+        # Try to get project name from XCF path
+        project_title = None
+        try:
+            file = image.get_file()
+            if file:
+                xcf_path = file.get_path()
+                if xcf_path:
+                    project_title = os.path.splitext(os.path.basename(xcf_path))[0]
+        except Exception:
+            pass
+        if not project_title:
+            # Fallback: use name of bottom layer
+            layers = image.get_layers()
+            if layers:
+                try:
+                    project_title = layers[-1].get_name()
+                except Exception:
+                    project_title = "Untitled"
+            else:
+                project_title = "Untitled"
+
+        # Create the title text layer at top left (e.g., x=10, y=10), no centering
+        create_text_layer(image, project_title, 10, 10, "Project_Title", (1.0, 1.0, 1.0), align='left')
+
         total_area = 0
         total_area_um2 = 0.0
-
-        # Store label layer info to create them after all area layers
         label_layers_info = []
 
         for i, path in enumerate(paths):
@@ -663,7 +689,6 @@ class GarnetPlugin(Gimp.PlugIn):
             pixel_count = compute_selection_area(selection)
             total_area += pixel_count
 
-            # Determine if area is significant
             is_small_area = False
             if scale_config:
                 pixels, micrometers, ppm = scale_config
@@ -683,7 +708,6 @@ class GarnetPlugin(Gimp.PlugIn):
             center_y = actual_y + (actual_h // 2)
             text_layer_name = f"Label_{path_name}"
 
-            # Store label info to create later (after all area layers)
             label_layers_info.append({
                 'text_content': text_content,
                 'center_x': center_x,
@@ -697,13 +721,11 @@ class GarnetPlugin(Gimp.PlugIn):
             else:
                 Gimp.message(f"Path '{path_name}': {pixel_count} pixels (layer: {layer_name})")
 
-        # Now create all label layers on top
         for label_info in label_layers_info:
             create_text_layer(image, label_info['text_content'],
                             label_info['center_x'], label_info['center_y'],
                             label_info['text_layer_name'], label_info['bright_color'])
 
-        # End undo group
         image.undo_group_end()
 
         if scale_config:
