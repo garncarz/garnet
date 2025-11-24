@@ -111,6 +111,7 @@ Analyze a new microscopic image:
 - `train` - Complete training workflow (export + prepare + train)
 - `predict` - Complete prediction workflow (predict + svg + xcf + scale + areas)
 
+
 ## GIMP Plugin Features
 
 When using GIMP interactively (`Filters → Garnet`):
@@ -118,6 +119,20 @@ When using GIMP interactively (`Filters → Garnet`):
 - **Set Scale from Selection** - Define pixel ↔ micrometer conversion
 - **Export XCF to PNGs** - Export layers and paths to images/labels
 - **Compute Path Areas** - Measure and visualize path areas with colored overlays
+
+### CSV Output Format (Path Areas)
+
+When you run "Compute Path Areas", a CSV is generated with the following logic:
+
+- Each grain is a row, with area values packed into mesh columns (one value per cell, extra rows for overflow).
+- If path names start with `Selection`, they are grouped as grain `0` (useful for single-grain images).
+- The header is: `grain, mesh_1, mesh_2, ..., mesh_N, SUM`.
+- A final `SUM` row contains the sum of each mesh column and the total sum.
+- Additional rows at the end:
+   - `IMAGE AREA` row: total area of the image in µm²
+   - `PERCENTAGE` row: percentage of measured area vs. total image area
+
+This format is compatible with LibreOffice and other spreadsheet tools.
 
 ## Label Format
 
