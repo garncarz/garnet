@@ -13,9 +13,6 @@ import argparse
 from pathlib import Path
 import numpy as np
 import cv2
-from scipy import ndimage as ndi
-from skimage import morphology, feature, measure
-from skimage.segmentation import watershed
 
 
 def load_image(img_path: Path):
