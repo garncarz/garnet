@@ -84,8 +84,11 @@ def perform_watershed(gray, edges):
     # Morphological opening removes peaks/fractures, leaving segment centers
     opened = cv2.morphologyEx(elevation, cv2.MORPH_OPEN, kernel, iterations=3)
     
-    # Distance transform on the opened image
-    dist = cv2.distanceTransform(opened, cv2.DIST_L2, 5)
+    # Convert to binary for distance transform
+    _, opened_binary = cv2.threshold(opened, 10, 255, cv2.THRESH_BINARY)
+    
+    # Distance transform on the binary mask
+    dist = cv2.distanceTransform(opened_binary, cv2.DIST_L2, 5)
     
     # Threshold to find sure foreground markers
     # Lower threshold = more segments
@@ -150,6 +153,7 @@ def extract_contours(labels, min_area=50):
             area = cv2.contourArea(contour)
             if area >= min_area:
                 # Simplify contour to reduce points
+                # Using 0.01 for more aggressive simplification to reduce SVG size
                 epsilon = 0.01 * cv2.arcLength(contour, True)
                 approx = cv2.approxPolyDP(contour, epsilon, True)
                 
@@ -272,16 +276,14 @@ def main():
         debug_dir = input_path.parent / f"{input_path.stem}_debug"
         debug_dir.mkdir(exist_ok=True)
         
-        # Recompute some intermediate values for visualization
+        # Save edges
+        cv2.imwrite(str(debug_dir / "01_edges.png"), edges)
+        
+        # Compute and save gradient for visualization
         grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         gradient = np.sqrt(grad_x**2 + grad_y**2)
         gradient = cv2.convertScaleAbs(gradient)
-        
-        # Save edges
-        cv2.imwrite(str(debug_dir / "01_edges.png"), edges)
-        
-        # Save gradient
         cv2.imwrite(str(debug_dir / "02_gradient.png"), gradient)
         
         # Save labeled regions with different colors
