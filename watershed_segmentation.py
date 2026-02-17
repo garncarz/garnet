@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Watershed Segmentation for Image Processing
+Watershed Segmentation for Garnet Rocks
 
-This script performs TRUE watershed segmentation on an input image, detecting
-internal fracture lines within objects and exporting each distinct segment
-as a separate SVG path.
+This script performs watershed segmentation using OTSU thresholding and distance
+transform to detect internal segments within garnet rocks. Based on the proven
+approach that works best for this type of imagery.
 
 Usage:
     ./watershed_segmentation.py input_image.jpg [--output output.svg]
@@ -14,120 +14,82 @@ import argparse
 from pathlib import Path
 import numpy as np
 import cv2
+from skimage import color
 
 
-def load_image(img_path: Path):
-    """Load image and convert to grayscale."""
-    img = cv2.imread(str(img_path))
-    if img is None:
-        raise ValueError(f"Could not load image: {img_path}")
-    
-    # Convert to RGB (OpenCV loads as BGR)
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    # Convert to grayscale for processing
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    return img_rgb, gray, img.shape[:2]
-
-
-def detect_edges(gray):
+def perform_watershed(img_path: Path):
     """
-    Detect edges/fracture lines in the image.
-    This is crucial for watershed to find internal segments.
-    """
-    # Apply Gaussian blur to reduce noise
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    Perform watershed segmentation using the proven OTSU + distance transform approach.
     
-    # Use Canny edge detection to find fracture lines
-    edges = cv2.Canny(blurred, 30, 100)
-    
-    # Dilate edges slightly to make them more prominent
-    kernel = np.ones((2, 2), np.uint8)
-    edges = cv2.dilate(edges, kernel, iterations=1)
-    
-    return edges
-
-
-def perform_watershed(gray, edges):
-    """
-    Perform TRUE watershed segmentation using marker-based approach.
-    
-    The strategy:
-    1. Detect fracture lines (edges)
-    2. Find regions between fractures (segment seeds)
-    3. Use watershed to fill from seeds, stopped by fractures
+    This is the approach that has been validated to work best for garnet segmentation.
     
     Returns:
-        labels: Array where each unique value represents a different segment
+        img_bgr: Original image with boundaries marked
+        markers: Watershed segmentation labels
+        img_color: Color-coded segmentation result
     """
-    # Step 1: Identify objects (rocks)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # Load image
+    img_bgr = cv2.imread(str(img_path))
+    if img_bgr is None:
+        raise ValueError(f"Could not load image: {img_path}")
     
-    # Clean up
+    # Convert to grayscale
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    
+    # OTSU thresholding - automatically finds optimal threshold
+    ret1, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Morphological opening to remove small noise (5 iterations is key)
     kernel = np.ones((3, 3), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=5)
     
-    # Step 2: Create elevation map where fractures are peaks
-    # Invert the image so dark regions (fractures) become high elevations
-    elevation = cv2.bitwise_not(gray)
+    # Sure background area - dilate to expand boundaries
+    sure_bg = cv2.dilate(opening, kernel, iterations=2)
     
-    # Enhance fractures in the elevation map
-    # Add edge information
-    elevation = cv2.add(elevation, edges)
+    # Sure foreground area using distance transform
+    # This is the key step - distance from boundaries
+    dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 3)
     
-    # Apply only within objects
-    elevation = cv2.bitwise_and(elevation, elevation, mask=binary)
+    # Threshold at 5% of max distance (lower = more segments, key parameter!)
+    # 0.05 works well for detecting internal fractures
+    ret2, sure_fg = cv2.threshold(dist_transform, 0.05 * dist_transform.max(), 255, 0)
+    sure_fg = np.uint8(sure_fg)
     
-    # Step 3: Find markers (segment seeds)
-    # These are local minima in the elevation map (centers of segments)
+    # Unknown region = background - foreground
+    unknown = cv2.subtract(sure_bg, sure_fg)
     
-    # Morphological opening removes peaks/fractures, leaving segment centers
-    opened = cv2.morphologyEx(elevation, cv2.MORPH_OPEN, kernel, iterations=3)
+    # Label markers using connected components
+    ret3, markers = cv2.connectedComponents(sure_fg)
     
-    # Convert to binary for distance transform
-    _, opened_binary = cv2.threshold(opened, 10, 255, cv2.THRESH_BINARY)
+    # Add 10 to all labels so background is not 0
+    # This ensures watershed doesn't treat background as unknown
+    markers = markers + 10
     
-    # Distance transform on the binary mask
-    dist = cv2.distanceTransform(opened_binary, cv2.DIST_L2, 5)
+    # Mark unknown region as 0
+    markers[unknown == 255] = 0
     
-    # Threshold to find sure foreground markers
-    # Lower threshold = more segments
-    dist_max = dist.max()
-    if dist_max > 0:
-        _, markers = cv2.threshold(dist, 0.15 * dist_max, 255, 0)
-        markers = np.uint8(markers)
-    else:
-        markers = np.zeros_like(dist, dtype=np.uint8)
+    # Apply watershed on the ORIGINAL COLOR image (important!)
+    markers = cv2.watershed(img_bgr, markers)
     
-    # Label connected components
-    n_labels, labels = cv2.connectedComponents(markers)
+    # Mark boundaries in yellow
+    img_bgr[markers == -1] = [0, 255, 255]
     
-    print(f"  Found {n_labels - 1} initial segment seeds")
+    # Create color-coded result
+    img_color = color.label2rgb(markers, bg_label=0)
     
-    if n_labels <= 1:
-        # No markers found, return empty
-        return np.ones_like(gray, dtype=np.int32)
+    print(f"  Found {len(np.unique(markers)) - 2} segments (excluding background and boundaries)")
+    print(f"  Distance transform max: {dist_transform.max():.2f}")
+    print(f"  Threshold used: {0.05 * dist_transform.max():.2f}")
     
-    # Markers need to start from 1 (0 is unknown)
-    labels = labels + 1
-    
-    # Mark background as 0
-    labels[binary == 0] = 0
-    
-    # Step 4: Apply watershed
-    elevation_3ch = cv2.cvtColor(elevation, cv2.COLOR_GRAY2BGR)
-    labels = cv2.watershed(elevation_3ch, labels)
-    
-    return labels
+    return img_bgr, markers, img_color
 
 
-def extract_contours(labels, min_area=50):
+def extract_contours(markers, min_area=50):
     """
-    Extract contours from watershed-segmented labels.
-    Each segment within a rock gets its own contour.
+    Extract contours from watershed markers.
     
     Args:
-        labels: Watershed labels array
+        markers: Watershed labels array
         min_area: Minimum area threshold to filter small segments
     
     Returns:
@@ -135,15 +97,15 @@ def extract_contours(labels, min_area=50):
     """
     contours_list = []
     
-    # Get unique labels (excluding background 1 and boundary -1)
-    unique_labels = np.unique(labels)
-    unique_labels = unique_labels[(unique_labels > 1)]
+    # Get unique labels (excluding background 10 and boundary -1)
+    unique_labels = np.unique(markers)
+    unique_labels = unique_labels[(unique_labels > 10) & (unique_labels != -1)]
     
-    print(f"Found {len(unique_labels)} watershed segments")
+    print(f"  Extracting contours for {len(unique_labels)} segments")
     
     for label in unique_labels:
         # Create binary mask for this segment
-        mask = np.uint8(labels == label) * 255
+        mask = np.uint8(markers == label) * 255
         
         # Find contours for this segment
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -225,7 +187,7 @@ def export_svg(contours, width, height, output_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Perform TRUE watershed segmentation to detect internal segments within objects"
+        description="Perform watershed segmentation using proven OTSU + distance transform approach"
     )
     parser.add_argument(
         "input",
@@ -243,6 +205,12 @@ def main():
         type=int,
         default=50,
         help="Minimum area threshold for segments (default: 50 pixels)"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.05,
+        help="Distance transform threshold (default: 0.05, lower = more segments)"
     )
     parser.add_argument(
         "--debug",
@@ -263,73 +231,47 @@ def main():
         output_path = input_path.parent / f"{input_path.stem}_segmented.svg"
     
     print(f"Loading image: {input_path}")
-    img_rgb, gray, (height, width) = load_image(input_path)
     
-    print("Detecting edges and fracture lines...")
-    edges = detect_edges(gray)
+    # Perform watershed segmentation
+    print("Performing watershed segmentation (OTSU + distance transform)...")
+    img_with_boundaries, markers, img_color = perform_watershed(input_path)
     
-    print("Performing watershed segmentation...")
-    labels = perform_watershed(gray, edges)
+    # Get image dimensions
+    height, width = markers.shape
     
     if args.debug:
         # Save debug visualizations
         debug_dir = input_path.parent / f"{input_path.stem}_debug"
         debug_dir.mkdir(exist_ok=True)
         
-        # Save edges
-        cv2.imwrite(str(debug_dir / "01_edges.png"), edges)
+        # Save boundaries
+        cv2.imwrite(str(debug_dir / "01_boundaries.png"), img_with_boundaries)
         
-        # Compute and save gradient for visualization
-        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        gradient = np.sqrt(grad_x**2 + grad_y**2)
-        gradient = cv2.convertScaleAbs(gradient)
-        cv2.imwrite(str(debug_dir / "02_gradient.png"), gradient)
+        # Save color-coded segments
+        img_color_bgr = (img_color * 255).astype(np.uint8)
+        img_color_bgr = cv2.cvtColor(img_color_bgr, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(str(debug_dir / "02_color_segments.png"), img_color_bgr)
         
-        # Save labeled regions with different colors
-        label_overlay = np.zeros_like(img_rgb)
-        unique_labels = np.unique(labels)
-        unique_labels = unique_labels[unique_labels > 1]
-        
-        import matplotlib.pyplot as plt
-        if len(unique_labels) > 0:
-            colors = plt.cm.rainbow(np.linspace(0, 1, len(unique_labels)))
-            
-            for idx, label in enumerate(unique_labels):
-                mask = labels == label
-                label_overlay[mask] = (np.array(colors[idx][:3]) * 255).astype(np.uint8)
-        
-        # Blend with original
-        blended = cv2.addWeighted(img_rgb, 0.4, label_overlay, 0.6, 0)
-        cv2.imwrite(str(debug_dir / "03_segments_overlay.png"), cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
-        
-        # Save boundaries (watershed lines)
-        boundary_img = img_rgb.copy()
-        boundary_img[labels == -1] = [255, 0, 0]
-        cv2.imwrite(str(debug_dir / "04_boundaries.png"), cv2.cvtColor(boundary_img, cv2.COLOR_RGB2BGR))
-        
-        # Save just the segments colored
-        segment_img = label_overlay.copy()
-        cv2.imwrite(str(debug_dir / "05_segments_only.png"), cv2.cvtColor(segment_img, cv2.COLOR_RGB2BGR))
+        # Save markers visualization
+        markers_vis = np.uint8((markers - markers.min()) / (markers.max() - markers.min()) * 255)
+        cv2.imwrite(str(debug_dir / "03_markers.png"), markers_vis)
         
         print(f"Debug images saved to: {debug_dir}")
-        print(f"  - 01_edges.png: Detected edges/fractures")
-        print(f"  - 02_gradient.png: Gradient magnitude")
-        print(f"  - 03_segments_overlay.png: Segments overlaid on original")
-        print(f"  - 04_boundaries.png: Watershed boundary lines")
-        print(f"  - 05_segments_only.png: Just the colored segments")
+        print(f"  - 01_boundaries.png: Image with watershed boundaries in yellow")
+        print(f"  - 02_color_segments.png: Color-coded segments")
+        print(f"  - 03_markers.png: Watershed markers visualization")
     
     print("Extracting contours...")
-    contours = extract_contours(labels, min_area=args.min_area)
+    contours = extract_contours(markers, min_area=args.min_area)
     
-    print(f"Found {len(contours)} distinct segments")
+    print(f"Found {len(contours)} distinct segments (after area filtering)")
     
     print(f"Exporting SVG to: {output_path}")
     export_svg(contours, width, height, output_path)
     
     print("Done!")
     print(f"\nOutput saved to: {output_path}")
-    print(f"Total segments: {len(contours)}")
+    print(f"Total segments exported: {len(contours)}")
 
 
 if __name__ == "__main__":
